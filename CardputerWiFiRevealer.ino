@@ -55,13 +55,19 @@ struct WifiNet {
   String password;
 };
 
-// Globales (que pueden estar en otro lado...
+// Globales (que pueden estar en otro lado...)
 std::vector<WifiNet> nets;
 int scrollOffset = 0;
 int selectedIdx  = 0;
 bool showingPass = false;
 
 const int LINES_PER_PAGE = 7;
+
+// Variables para el scroll del SSID seleccionado
+int     ssidScrollPos    = 0;       // posición actual del scroll (en caracteres)
+unsigned long lastSsidScroll = 0;   // timestamp del último avance
+const int SSID_SCROLL_DELAY = 300;  // ms entre cada paso de scroll
+const int SSID_MAX_VISIBLE  = 16;   // caracteres visibles en la fila
 
 // Animación de escaneo
 void drawScanProgress(int current, int total) {
@@ -181,8 +187,47 @@ void doScan() {
   WiFi.scanDelete();
 }
 
+// Dibuja una sola fila del listado (para redibujar solo la línea que scrollea)
+void drawRow(int idx, int y, bool selected) {
+  int w     = M5Cardputer.Display.width();
+  int lineH = M5Cardputer.Display.fontHeight();
+
+  // Limpiar la fila
+  M5Cardputer.Display.fillRect(0, y, w - 4, lineH, COLOR_BG);
+
+  if (selected) {
+    M5Cardputer.Display.fillRect(0, y, w - 4, lineH, DARKGREY);
+  }
+
+  WifiNet& net = nets[idx];
+  uint16_t col = net.cracked ? COLOR_FOUND : COLOR_NORMAL;
+  M5Cardputer.Display.setTextColor(col);
+  M5Cardputer.Display.setCursor(2, y);
+
+  if (selected && (int)net.ssid.length() > SSID_MAX_VISIBLE) {
+    // SSID largo seleccionado: mostrar ventana deslizante
+    // Espacios al final para que haya pausa antes de reiniciar
+    String padded = net.ssid + "   ";
+    int len = padded.length();
+    String visible = "";
+    for (int c = 0; c < SSID_MAX_VISIBLE; c++) {
+      visible += padded[(ssidScrollPos + c) % len];
+    }
+    M5Cardputer.Display.printf("%-16s%4d", visible.c_str(), net.rssi);
+  } else {
+    // SSID corto o no seleccionado: mostrar normal truncado
+    String ssidShort = net.ssid;
+    if (ssidShort.length() > 19) ssidShort = ssidShort.substring(0, 18) + "~";
+    M5Cardputer.Display.printf("%-16s%4d", ssidShort.c_str(), net.rssi);
+  }
+}
+
 // Dibuja la lista ->
 void drawList() {
+  // Resetear scroll del SSID al redibujar la lista completa
+  ssidScrollPos = 0;
+  lastSsidScroll = millis();
+
   M5Cardputer.Display.fillScreen(COLOR_BG);
   M5Cardputer.Display.setTextSize(1.7);
 
@@ -198,22 +243,7 @@ void drawList() {
   for (int i = 0; i < LINES_PER_PAGE; i++) {
     int idx = scrollOffset + i;
     if (idx >= (int)nets.size()) break;
-
-    WifiNet& net = nets[idx];
-    bool     sel = (idx == selectedIdx);
-
-    if (sel) {
-      M5Cardputer.Display.fillRect(0, y, w, lineH, DARKGREY);
-    }
-
-    uint16_t col = net.cracked ? COLOR_FOUND : COLOR_NORMAL;
-    M5Cardputer.Display.setTextColor(col);
-    M5Cardputer.Display.setCursor(2, y);
-
-    String ssidShort = net.ssid;
-    if (ssidShort.length() > 19) ssidShort = ssidShort.substring(0, 18) + "~";
-    M5Cardputer.Display.printf("%-16s%4d", ssidShort.c_str(), net.rssi);
-
+    drawRow(idx, y, idx == selectedIdx);
     y += lineH + 2;
   }
 
@@ -274,7 +304,7 @@ void drawPassword() {
   M5Cardputer.Display.print(" Enter/Del: volver");
 }
 
-// ─── Setup ─────────────────────────────────────────────────
+// Setup 
 void setup() {
   auto cfg = M5.config();
   M5Cardputer.begin(cfg, true);
@@ -300,6 +330,27 @@ void setup() {
 // Loop principal
 void loop() {
   M5Cardputer.update();
+
+  // Scroll automático del SSID seleccionado (solo en la lista, no en la pantalla de pass)
+  if (!showingPass && !nets.empty()) {
+    WifiNet& selNet = nets[selectedIdx];
+    if ((int)selNet.ssid.length() > SSID_MAX_VISIBLE) {
+      unsigned long now = millis();
+      if (now - lastSsidScroll >= SSID_SCROLL_DELAY) {
+        lastSsidScroll = now;
+
+        // Avanzar un carácter y dar vuelta con pausa (3 espacios de padding)
+        String padded = selNet.ssid + "   ";
+        ssidScrollPos = (ssidScrollPos + 1) % padded.length();
+
+        // Calcular la posición Y de la fila seleccionada y redibujarla sola
+        M5Cardputer.Display.setTextSize(1.7);
+        int lineH = M5Cardputer.Display.fontHeight();
+        int rowY  = (lineH + 3) + (selectedIdx - scrollOffset) * (lineH + 2);
+        drawRow(selectedIdx, rowY, true);
+      }
+    }
+  }
 
   if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
     Keyboard_Class::KeysState ks = M5Cardputer.Keyboard.keysState();
